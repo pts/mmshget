@@ -1,6 +1,14 @@
 #! /usr/bin/python2.4
 # by pts@fazekas.hu at Sat Mar 24 17:32:25 CET 2012
 #
+# mmshget: mmsh:// (MMS-over-HTTP) video stream downloader and reference
+# implementation
+#
+# mmshget is a Python script to download streaming videos of the mmsh://
+# (MMS-over-HTTP) protocol, in .wmv (or .asf) format. mmshget can also be
+# used as an easy-to-understand, simple, client-side, partial reference
+# implementation of the mmsh:// protocol.
+#
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 2 of the License, or
