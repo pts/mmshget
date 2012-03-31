@@ -7,6 +7,7 @@ import re
 import socket
 import struct
 import sys
+import time
 
 # --- Proxy
 
@@ -342,6 +343,7 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
   out_pos = 0
   sys.stderr.write('Downloading stream...')
   max_msg_size = 0
+  start_ts = time.time()
   while True:  # It's an error not to have the END chunk.
     chunk_pos = pos
     # print '@%d' % pos
@@ -413,11 +415,18 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
       if packet_size > chunk_size:
         outf.write('\0' * (packet_size - chunk_size))  # Padding.
       out_pos += packet_size
+      now_ts = time.time()
+      # Download speed: out_pos / (now_ts - start_ts).
+      # Exp. total download time: file_size / (out_pos / (now_ts - start_ts)).
+      # Expected remaining download time:
+      #     (now_ts - start_ts) * (file_size / out_pos - 1).
+      eta = (now_ts - start_ts) * ((file_size + 0.0) / out_pos - 1)      
       if file_size:
         # TODO(pts): Print an ETA.
-        msg = 'Downloaded %d of %d bytes (%.2f%%)...' % (
+        msg = 'Downloaded %d of %d bytes (%.2f%%), ETA %ds...' % (
             out_pos, file_size,
-            (100.0 * out_pos / file_size))
+            (100.0 * out_pos / file_size),
+            int(eta + .999999))
       else:
         msg = 'Downloaded %d bytes...'
       max_msg_size = max(max_msg_size, len(msg))
@@ -428,7 +437,9 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
     assert len(chunk_data) == chunk_size
   # TODO(pts): Do this in a `finally:' block.
   sys.stderr.write('\r' + ' ' * max_msg_size)
-  print >>sys.stderr, '\rDownload finished (%d bytes).' % out_pos
+  duration = time.time() - start_ts
+  print >>sys.stderr, '\rDownload finished (%d bytes) in %ds.' % (
+      out_pos, int(duration + .999999))
   sys.stderr.flush()
 
 
