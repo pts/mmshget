@@ -1,5 +1,24 @@
 #! /usr/bin/python2.4
 # by pts@fazekas.hu at Sat Mar 24 17:32:25 CET 2012
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+#
+# Use this script to download .wmv (.asf) files from mmsh:// URLs. This
+# implementation doesn't have sophisticated error handling (just asserts) or
+# recovery. This implementation is simple enough to be a reference
+# implementation for the client-side of the mmsh:// protocol in Python.
+# This implementation is inspired by mmsh.c in libmms-0.4.
+
+__author__ = 'pts@fazekas.hu (Peter Szabo)'
 
 import array
 import os
@@ -47,7 +66,7 @@ RESPONSE_HEADER_RE = re.compile(r'([A-Za-z][-\w]*): ?([^\r\n]*)\Z')
 
 def DoHttpRequest(url, request_headers=(), timeout=10):
   """Send a HTTP GET request.
-  
+
   Args:
     url: String containing an http:// or mmsh:// URL.
     request_headers: Sequence of strings containing request headers to send.
@@ -128,80 +147,33 @@ CHUNK_TYPE_DATA       = 0x4424
 CHUNK_TYPE_END        = 0x4524
 CHUNK_TYPE_ASF_HEADER = 0x4824
 EXT_HEADER_SIZES = {
-  CHUNK_TYPE_RESET      : 4,
-  CHUNK_TYPE_DATA       : 8,
-  CHUNK_TYPE_END        : 4,
-  CHUNK_TYPE_ASF_HEADER : 8,
+    CHUNK_TYPE_RESET      : 4,
+    CHUNK_TYPE_DATA       : 8,
+    CHUNK_TYPE_END        : 4,
+    CHUNK_TYPE_ASF_HEADER : 8,
 }
 NAME_FROM_TYPE = {
-  CHUNK_TYPE_RESET      : 'RESET',
-  CHUNK_TYPE_DATA       : 'DATA',
-  CHUNK_TYPE_END        : 'END',
-  CHUNK_TYPE_ASF_HEADER : 'ASF_HEADER',
+    CHUNK_TYPE_RESET      : 'RESET',
+    CHUNK_TYPE_DATA       : 'DATA',
+    CHUNK_TYPE_END        : 'END',
+    CHUNK_TYPE_ASF_HEADER : 'ASF_HEADER',
 }
 
 ASF_MAX_HEADER_SIZE = 16384
 ASF_MAX_NUM_STREAMS = 23
 
-# base ASF objects
-GUID_HEADER = '3026b2758e66cf11a6d900aa0062ce6c'
-GUID_ASF_DATA = '3626b2758e66cf11a6d900aa0062ce6c'
-GUID_SIMPLE_INDEX = '90080033b1e5cf1189f400a0c90349cb'
-GUID_INDEX = 'd329e2d6da35d111903400a0c90349be'
-GUID_MEDIA_OBJECT_INDEX = 'f803b1fead12644c840f2a1d2f7ad48c'
-GUID_TIMECODE_INDEX = 'd03fb73c4a0c0348953dedf7b6228f0c'
-# header ASF objects
+# The binary version of these hex strings appear in the file like this
+# verbatim.
 GUID_ASF_FILE_PROPERTIES = 'a1dcab8c47a9cf118ee400c00c205365'
 GUID_ASF_STREAM_PROPERTIES = '9107dcb7b7a9cf118ee600c00c205365'
-GUID_HEADER_EXTENSION = 'b503bf5f2ea9cf118ee300c00c205365'
-GUID_CODEC_LIST = '4052d1861d31d011a3a400a0c90348f6'
-GUID_SCRIPT_COMMAND = '301afb1e620bd011a39b00a0c90348f6'
-GUID_MARKER = '01cd87f451a9cf118ee600c00c205365'
-GUID_BITRATE_MUTUAL_EXCLUSION = 'dc29e2d6da35d111903400a0c90349be'
-GUID_ERROR_CORRECTION = '3526b2758e66cf11a6d900aa0062ce6c'
-GUID_CONTENT_DESCRIPTION = '3326b2758e66cf11a6d900aa0062ce6c'
-GUID_EXTENDED_CONTENT_DESCRIPTION = '40a4d0d207e3d21197f000a0c95ea850'
-# (http://get.to/sdp)
-GUID_ASF_STREAM_BITRATE_PROPERTIES = 'ce75f87b8d46d1118d82006097c9a2b2'
-GUID_EXTENDED_CONTENT_ENCRYPTION = '14e68a292226174cb935dae07ee9289c'
-GUID_PADDING = '74d40618dfca0945a4ba9aabcb96aae8'
-# stream properties object stream type
 GUID_ASF_AUDIO_MEDIA = '409e69f84d5bcf11a8fd00805f5c442b'
 GUID_ASF_VIDEO_MEDIA = 'c0ef19bc4d5bcf11a8fd00805f5c442b'
 GUID_ASF_COMMAND_MEDIA = 'c0cfda59e659d011a3ac00a0c90348f6'
 GUID_ASF_JFIF_MEDIA = '00e11bb64e5bcf11a8fd00805f5c442b'
 GUID_ASF_DEGRADABLE_JPEG_MEDIA = 'e07d903515e4cf11a91700805f5c442b'
-GUID_FILE_TRANSFER_MEDIA = '2c22bd911cf27a498b6d5aa86bfc0185'
-GUID_BINARY_MEDIA = 'e265fb3aef47f240ac2c70a90d71d343'
-# stream properties object error correction
-GUID_NO_ERROR_CORRECTION = '0057fb20555bcf11a8fd00805f5c442b'
-GUID_AUDIO_SPREAD = '50cdc3bf8f61cf118bb200aa00b4e220'
-# mutual exclusion object exlusion type
-GUID_MUTEX_BITRATE = '012ae2d6da35d111903400a0c90349be'
-GUID_MUTEX_UNKNOWN = '022ae2d6da35d111903400a0c90349be'
-# header extension
-GUID_RESERVED_1 = '11d2d3abbaa9cf118ee600c00c205365'
-# script command
-GUID_RESERVED_SCRIPT_COMMAND = 'e3cb1a4b0b10d011a39b00a0c90348f6'
-# marker object
-GUID_RESERVED_MARKER = '20dbfe4cf675cf119c0f00a0c90349cb'
-# various
-# Already defined (reserved_1)
-GUID_HEAD2 = '11d2d3abbaa9cf118ee600c00c205365'
-GUID_AUDIO_CONCEAL_NONE = '40a4f149ce4ed011a3ac00a0c90348f6'
-GUID_CODEC_COMMENT1_HEADER = '4152d1861d31d011a3a400a0c90348f6'
-GUID_ASF_20_HEADER = 'd129e2d6da35d111903400a0c90349be'
+GUID_ASF_STREAM_BITRATE_PROPERTIES = 'ce75f87b8d46d1118d82006097c9a2b2'
+GUID_ASF_DATA = '3626b2758e66cf11a6d900aa0062ce6c'
 
-# !! In idojaras:
-# 3326b2758e66cf11a6d900aa0062ce6c GUID_CONTENT_DESCRIPTION
-# 40a4d0d207e3d21197f000a0c95ea850 GUID_EXTENDED_CONTENT_DESCRIPTION
-# 4052d1861d31d011a3a400a0c90348f6 GUID_CODEC_LIST
-# a1dcab8c47a9cf118ee400c00c205365 GUID_FILE_PROPERTIES
-# b503bf5f2ea9cf118ee300c00c205365 GUID_HEADER_EXTENSION
-# 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES
-# 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES (again)
-# ce75f87b8d46d1118d82006097c9a2b2 GUID_STREAM_BITRATE_PROPERTIES
-# 3626b2758e66cf11a6d900aa0062ce6c GUID_ASF_DATA
 
 def ParseAsfHeader(asf_head):
   assert asf_head, 'Missing ASF header.'
@@ -210,7 +182,7 @@ def ParseAsfHeader(asf_head):
   file_size = None
   stream_ids = {}
   stream_bitrates = {}
-  stream_bitrates_pos = {}   # !! use this
+  stream_bitrates_pos = {}
   packet_count = None
   while i + 24 <= len(asf_head):
     guid, size = struct.unpack('<16sQ', asf_head[i : i + 24])
@@ -300,7 +272,7 @@ def DoFirstAsfRequest(url):
       ext_header_size = EXT_HEADER_SIZES[chunk_type]
       ext_head = f.read(ext_header_size)
       assert len(ext_head) == ext_header_size
-      chunk_size -= ext_header_size    
+      chunk_size -= ext_header_size
       assert len(asf_head) + chunk_size <= ASF_MAX_HEADER_SIZE, (
           'ASF header too long.')
       chunk_data = f.read(chunk_size)
@@ -346,7 +318,6 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
   start_ts = time.time()
   while True:  # It's an error not to have the END chunk.
     chunk_pos = pos
-    # print '@%d' % pos
     chunk_head = f.read(4)
     pos += len(chunk_head)
     assert len(chunk_head) == 4, 'Unexpected EOF in chunk_head=%r' % chunk_head
@@ -357,8 +328,6 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
     pos += len(ext_head)
     chunk_size -= ext_header_size
     assert len(ext_head) == ext_header_size
-    #print '@%d headext_size=%d type=%s size=%d' % (
-    #    chunk_pos, 4 + ext_header_size, NAME_FROM_TYPE[chunk_type], chunk_size)
 
     if chunk_type == CHUNK_TYPE_DATA:
       seq = int(struct.unpack('<L', ext_head[:4])[0])
@@ -407,7 +376,6 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
     chunk_data = f.read(chunk_size)
     pos += len(chunk_data)
     assert len(chunk_data) == chunk_size
-    # print 'DUMP size=%d %r' % (len(chunk_data), chunk_data)
     if chunk_type == CHUNK_TYPE_DATA:
       assert chunk_size <= packet_size, 'Bad chunk_size=%d, packet_size=%d' % (
           chunk_size, packet_size)
@@ -420,15 +388,14 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
       # Exp. total download time: file_size / (out_pos / (now_ts - start_ts)).
       # Expected remaining download time:
       #     (now_ts - start_ts) * (file_size / out_pos - 1).
-      eta = (now_ts - start_ts) * ((file_size + 0.0) / out_pos - 1)      
+      eta = (now_ts - start_ts) * ((file_size + 0.0) / out_pos - 1)
       if file_size:
-        # TODO(pts): Print an ETA.
         msg = 'Downloaded %d of %d bytes (%.2f%%), ETA %ds...' % (
             out_pos, file_size,
             (100.0 * out_pos / file_size),
             int(eta + .999999))
       else:
-        msg = 'Downloaded %d bytes...'
+        msg = 'Downloaded %d bytes in %ds...' % int(now_ts - start_ts)
       max_msg_size = max(max_msg_size, len(msg))
       sys.stderr.write('\r' + msg)
       sys.stderr.flush()
@@ -487,20 +454,54 @@ def FindHighestQualityStream(asf_info, stream_type):
   return best_stream_id
 
 
-if __name__ == '__main__':
-  if len(sys.argv) > 1:
-    url = sys.argv[1]
-  else:
-    url = 'http://streamer3.carnation.hu/mtvod2/hirado/2012/03/14/idojaras_20120314_122.wmv?MSWMExt=.asf'
+def DownloadMmsh(url, save_filename):
   print >>sys.stderr, 'Downloading MMS from %s' % url
+  print >>sys.stderr, 'Will save ASF to %s' % save_filename
   asf_info = DoFirstAsfRequest(url)
   audio_stream_id = FindHighestQualityStream(asf_info, 'audio')
   video_stream_id = FindHighestQualityStream(asf_info, 'video')
-  #assert 0, (asf_info, audio_stream_id, video_stream_id)
   assert not (audio_stream_id is None and video_stream_id is None), (
       'Missing audio and video stream, asf_info=%r' % asf_info)
   enabled_stream_ids = set(
       stream_id for stream_id in (audio_stream_id, video_stream_id)
       if stream_id is not None)
-  outf = open('dump.asf', 'w')
-  DoSecondAsfRequest(url, outf, asf_info['stream_ids'], enabled_stream_ids)
+  print >>sys.stderr, 'Saving ASF to %s' % save_filename
+  outf = open(save_filename, 'w')
+  try:
+    DoSecondAsfRequest(url, outf, asf_info['stream_ids'], enabled_stream_ids)
+  finally:
+    outf.close()
+
+
+def GuessSaveFilenameFromUrl(url):
+  save_filename = re.sub(r'(?s)[?].*\Z', '', url)
+  save_filename = save_filename[save_filename.rfind('/') + 1 :]
+  save_filename = re.sub(
+      r'%([a-fA-F0-9]{2})',
+      lambda match: chr(int(match.group(1), 16)),
+      save_filename.replace('+', ' '))
+  save_filename = re.sub(
+      r'[^-.\w]',
+      lambda match: '%%%02X' % ord(match.group(0)), save_filename)
+  name, ext = os.path.splitext(save_filename)
+  ext = ext.lower()
+  if ext not in ('.asf', '.wmv'):
+    ext += '.wmv'
+  return name + ext
+
+
+def main(argv):
+  if len(argv) not in (2, 3):
+    print >>sys.stderr, 'Usage: %s <mmsh-url> [<save-filename>]' % argv[0]
+    print >>sys.stderr, 'Use this program to download mmsh:// streams.'
+    return 1
+  url = argv[1]
+  if len(argv) > 2:
+    save_filename = argv[2]
+  else:
+    save_filename = GuessSaveFilenameFromUrl(url)
+  DownloadMmsh(url, save_filename)
+
+
+if __name__ == '__main__':
+  sys.exit(main(sys.argv))
