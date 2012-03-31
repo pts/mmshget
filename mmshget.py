@@ -144,7 +144,7 @@ ASF_MAX_NUM_STREAMS = 23
 
 # base ASF objects
 GUID_HEADER = '3026b2758e66cf11a6d900aa0062ce6c'
-GUID_DATA = '3626b2758e66cf11a6d900aa0062ce6c'
+GUID_ASF_DATA = '3626b2758e66cf11a6d900aa0062ce6c'
 GUID_SIMPLE_INDEX = '90080033b1e5cf1189f400a0c90349cb'
 GUID_INDEX = 'd329e2d6da35d111903400a0c90349be'
 GUID_MEDIA_OBJECT_INDEX = 'f803b1fead12644c840f2a1d2f7ad48c'
@@ -200,25 +200,21 @@ GUID_ASF_20_HEADER = 'd129e2d6da35d111903400a0c90349be'
 # 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES
 # 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES (again)
 # ce75f87b8d46d1118d82006097c9a2b2 GUID_STREAM_BITRATE_PROPERTIES
-# 3626b2758e66cf11a6d900aa0062ce6c GUID_DATA
+# 3626b2758e66cf11a6d900aa0062ce6c GUID_ASF_DATA
 
 def ParseAsfHeader(asf_head):
   assert asf_head, 'Missing ASF header.'
   i = 30
   packet_size = 0
+  file_size = None
   stream_ids = {}
   stream_bitrates = {}
   stream_bitrates_pos = {}   # !! use this
+  packet_count = None
   while i + 24 <= len(asf_head):
     guid, size = struct.unpack('<16sQ', asf_head[i : i + 24])
     size = int(size)
     assert size >= 24
-    if size > 65535:
-      # Example: size=0xaba1b2 remaining=0x32
-      # assert 0, 'size=0x%x remaining=0x%x' % (size, len(asf_head) - i)
-      i = len(asf_head)
-      break
-    assert i + size <= len(asf_head), (i + size, size, len(asf_head))
     guid_hex = guid.encode('hex')
     # TODO(pts): Get file size for progress bar etc.
     if guid_hex == GUID_ASF_FILE_PROPERTIES:
@@ -226,6 +222,7 @@ def ParseAsfHeader(asf_head):
       packet_size = int(struct.unpack('<L', asf_head[i + 92 : i + 96])[0])
       assert packet_size > 0
       assert packet_size <= 65536, 'Too large packet_size=%d' % packet_size
+      file_size = int(struct.unpack('<Q', asf_head[i + 40 : i + 48])[0])
     elif guid_hex == GUID_ASF_STREAM_PROPERTIES:
       assert size >= 74
       stream_type_guid_hex = asf_head[i + 24 : i + 40].encode('hex')
@@ -254,11 +251,22 @@ def ParseAsfHeader(asf_head):
         bitrate = int(bitrate)
         stream_bitrates[stream_id] = bitrate
         stream_bitrates_pos[stream_id] = i + 28 + j * 6
+    elif guid_hex == GUID_ASF_DATA:
+      # This usually has size > 65535.
+      packet_count = int(struct.unpack('<Q', asf_head[i + 40 : i + 48])[0])
+    if size > 65535:
+      # Example: size=0xaba1b2 remaining=0x32
+      # assert 0, 'size=0x%x remaining=0x%x' % (size, len(asf_head) - i)
+      i = len(asf_head)
+      break
+    assert i + size <= len(asf_head), (i + size, size, len(asf_head))
     i += size
   assert i == len(asf_head)
   assert packet_size > 0, 'Could not find packet_size in ASF header.'
   return {
       'packet_size': packet_size,
+      'file_size': file_size,
+      'packet_count': packet_count,
       'stream_ids': stream_ids,
       'stream_bitrates': stream_bitrates,
       'stream_bitrates_pos': stream_bitrates_pos,
@@ -331,9 +339,12 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
   pos = 0
   asf_head = ''
   packet_size = 0
+  out_pos = 0
+  sys.stderr.write('Downloading stream...')
+  max_msg_size = 0
   while True:  # It's an error not to have the END chunk.
     chunk_pos = pos
-    print '@%d' % pos
+    # print '@%d' % pos
     chunk_head = f.read(4)
     pos += len(chunk_head)
     assert len(chunk_head) == 4, 'Unexpected EOF in chunk_head=%r' % chunk_head
@@ -344,8 +355,8 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
     pos += len(ext_head)
     chunk_size -= ext_header_size
     assert len(ext_head) == ext_header_size
-    print '@%d headext_size=%d type=%s size=%d' % (
-        chunk_pos, 4 + ext_header_size, NAME_FROM_TYPE[chunk_type], chunk_size)
+    #print '@%d headext_size=%d type=%s size=%d' % (
+    #    chunk_pos, 4 + ext_header_size, NAME_FROM_TYPE[chunk_type], chunk_size)
 
     if chunk_type == CHUNK_TYPE_DATA:
       seq = int(struct.unpack('<L', ext_head[:4])[0])
@@ -373,8 +384,19 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
       # All chunks of the ASF header has been read, interpret asf_head.
       asf_info = ParseAsfHeader(asf_head)
       packet_size = asf_info['packet_size']
-      outf.write(GetAsfHeaderWithStreamsDisabled(
-          asf_head, asf_info, enabled_stream_ids))
+      if asf_info.get('packet_count') is not None:
+        # Usually asf_info['file_size'] is longer (about 6.45 bytes per second)
+        # than this one, because the ASF file contains an index after the
+        # data stream -- but it's not possible to download that index using
+        # mmsh:// , so for our purposes the size of the file is without the
+        # index.
+        file_size = len(asf_head) + asf_info['packet_count'] * packet_size
+      else:
+        file_size = asf_info.get('file_size')
+      asf_head = GetAsfHeaderWithStreamsDisabled(
+          asf_head, asf_info, enabled_stream_ids)
+      outf.write(asf_head)
+      out_pos += len(asf_head)
       asf_head = ''  # Save memory.
       processed_asf_header = True
 
@@ -390,9 +412,24 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
       outf.write(chunk_data)
       if packet_size > chunk_size:
         outf.write('\0' * (packet_size - chunk_size))  # Padding.
+      out_pos += packet_size
+      if file_size:
+        # TODO(pts): Print an ETA.
+        msg = 'Downloaded %d of %d bytes (%.2f%%)...' % (
+            out_pos, file_size,
+            (100.0 * out_pos / file_size))
+      else:
+        msg = 'Downloaded %d bytes...'
+      max_msg_size = max(max_msg_size, len(msg))
+      sys.stderr.write('\r' + msg)
+      sys.stderr.flush()
     elif chunk_type == CHUNK_TYPE_ASF_HEADER:
       asf_head += chunk_data
     assert len(chunk_data) == chunk_size
+  # TODO(pts): Do this in a `finally:' block.
+  sys.stderr.write('\r' + ' ' * max_msg_size)
+  print >>sys.stderr, '\rDownload finished (%d bytes).' % out_pos
+  sys.stderr.flush()
 
 
 STREAM_ENABLE_FLAG = [2, 0]
