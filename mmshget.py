@@ -488,7 +488,11 @@ def FindHighestQualityStream(asf_info, stream_type):
 
 
 if __name__ == '__main__':
-  url = 'http://streamer3.carnation.hu/mtvod2/hirado/2012/03/14/idojaras_20120314_122.wmv?MSWMExt=.asf'
+  if len(sys.argv) > 1:
+    url = sys.argv[1]
+  else:
+    url = 'http://streamer3.carnation.hu/mtvod2/hirado/2012/03/14/idojaras_20120314_122.wmv?MSWMExt=.asf'
+  print >>sys.stderr, 'Downloading MMS from %s' % url
   asf_info = DoFirstAsfRequest(url)
   audio_stream_id = FindHighestQualityStream(asf_info, 'audio')
   video_stream_id = FindHighestQualityStream(asf_info, 'video')
