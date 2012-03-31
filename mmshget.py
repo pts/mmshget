@@ -1,6 +1,7 @@
 #! /usr/bin/python2.4
 # by pts@fazekas.hu at Sat Mar 24 17:32:25 CET 2012
 
+import array
 import os
 import re
 import socket
@@ -41,6 +42,7 @@ URL_RE = re.compile(r'(?:http|mmsh)://([^+%@?#:/]+)(?::(\d+))?(/[^\s#]*)?\Z')
 RESPONSE_LINE1_RE = re.compile(
     r'HTTP/(1[.][01]) +(\d{3}) +(\S[^\r\n]*)\r?\n\Z')
 RESPONSE_HEADER_RE = re.compile(r'([A-Za-z][-\w]*): ?([^\r\n]*)\Z')
+
 
 def DoHttpRequest(url, request_headers=(), timeout=10):
   """Send a HTTP GET request.
@@ -137,7 +139,8 @@ NAME_FROM_TYPE = {
   CHUNK_TYPE_ASF_HEADER : 'ASF_HEADER',
 }
 
-ASF_HEADER_MAX_SIZE = 16384
+ASF_MAX_HEADER_SIZE = 16384
+ASF_MAX_NUM_STREAMS = 23
 
 # base ASF objects
 GUID_HEADER = '3026b2758e66cf11a6d900aa0062ce6c'
@@ -148,7 +151,7 @@ GUID_MEDIA_OBJECT_INDEX = 'f803b1fead12644c840f2a1d2f7ad48c'
 GUID_TIMECODE_INDEX = 'd03fb73c4a0c0348953dedf7b6228f0c'
 # header ASF objects
 GUID_ASF_FILE_PROPERTIES = 'a1dcab8c47a9cf118ee400c00c205365'
-GUID_STREAM_HEADER = '9107dcb7b7a9cf118ee600c00c205365'
+GUID_ASF_STREAM_PROPERTIES = '9107dcb7b7a9cf118ee600c00c205365'
 GUID_HEADER_EXTENSION = 'b503bf5f2ea9cf118ee300c00c205365'
 GUID_CODEC_LIST = '4052d1861d31d011a3a400a0c90348f6'
 GUID_SCRIPT_COMMAND = '301afb1e620bd011a39b00a0c90348f6'
@@ -158,15 +161,15 @@ GUID_ERROR_CORRECTION = '3526b2758e66cf11a6d900aa0062ce6c'
 GUID_CONTENT_DESCRIPTION = '3326b2758e66cf11a6d900aa0062ce6c'
 GUID_EXTENDED_CONTENT_DESCRIPTION = '40a4d0d207e3d21197f000a0c95ea850'
 # (http://get.to/sdp)
-GUID_STREAM_BITRATE_PROPERTIES = 'ce75f87b8d46d1118d82006097c9a2b2'
+GUID_ASF_STREAM_BITRATE_PROPERTIES = 'ce75f87b8d46d1118d82006097c9a2b2'
 GUID_EXTENDED_CONTENT_ENCRYPTION = '14e68a292226174cb935dae07ee9289c'
 GUID_PADDING = '74d40618dfca0945a4ba9aabcb96aae8'
 # stream properties object stream type
-GUID_AUDIO_MEDIA = '409e69f84d5bcf11a8fd00805f5c442b'
-GUID_VIDEO_MEDIA = 'c0ef19bc4d5bcf11a8fd00805f5c442b'
-GUID_COMMAND_MEDIA = 'c0cfda59e659d011a3ac00a0c90348f6'
-GUID_JFIF_MEDIA_JPEG = '00e11bb64e5bcf11a8fd00805f5c442b'
-GUID_DEGRADABLE_JPEG_MEDIA = 'e07d903515e4cf11a91700805f5c442b'
+GUID_ASF_AUDIO_MEDIA = '409e69f84d5bcf11a8fd00805f5c442b'
+GUID_ASF_VIDEO_MEDIA = 'c0ef19bc4d5bcf11a8fd00805f5c442b'
+GUID_ASF_COMMAND_MEDIA = 'c0cfda59e659d011a3ac00a0c90348f6'
+GUID_ASF_JFIF_MEDIA = '00e11bb64e5bcf11a8fd00805f5c442b'
+GUID_ASF_DEGRADABLE_JPEG_MEDIA = 'e07d903515e4cf11a91700805f5c442b'
 GUID_FILE_TRANSFER_MEDIA = '2c22bd911cf27a498b6d5aa86bfc0185'
 GUID_BINARY_MEDIA = 'e265fb3aef47f240ac2c70a90d71d343'
 # stream properties object error correction
@@ -194,18 +197,21 @@ GUID_ASF_20_HEADER = 'd129e2d6da35d111903400a0c90349be'
 # 4052d1861d31d011a3a400a0c90348f6 GUID_CODEC_LIST
 # a1dcab8c47a9cf118ee400c00c205365 GUID_FILE_PROPERTIES
 # b503bf5f2ea9cf118ee300c00c205365 GUID_HEADER_EXTENSION
-# 9107dcb7b7a9cf118ee600c00c205365 GUID_STREAM_HEADER
-# 9107dcb7b7a9cf118ee600c00c205365 GUID_STREAM_HEADER (again)
+# 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES
+# 9107dcb7b7a9cf118ee600c00c205365 GUID_ASF_STREAM_PROPERTIES (again)
 # ce75f87b8d46d1118d82006097c9a2b2 GUID_STREAM_BITRATE_PROPERTIES
 # 3626b2758e66cf11a6d900aa0062ce6c GUID_DATA
 
 def ParseAsfHeader(asf_head):
-  asf_info = {}
   assert asf_head, 'Missing ASF header.'
   i = 30
   packet_size = 0
+  stream_ids = {}
+  stream_bitrates = {}
+  stream_bitrates_pos = {}   # !! use this
   while i + 24 <= len(asf_head):
     guid, size = struct.unpack('<16sQ', asf_head[i : i + 24])
+    size = int(size)
     assert size >= 24
     if size > 65535:
       # Example: size=0xaba1b2 remaining=0x32
@@ -217,18 +223,50 @@ def ParseAsfHeader(asf_head):
     # TODO(pts): Get file size for progress bar etc.
     if guid_hex == GUID_ASF_FILE_PROPERTIES:
       assert size >= 100
-      packet_size, = struct.unpack('<L', asf_head[i + 92 : i + 96])
+      packet_size = int(struct.unpack('<L', asf_head[i + 92 : i + 96])[0])
       assert packet_size > 0
       assert packet_size <= 65536, 'Too large packet_size=%d' % packet_size
+    elif guid_hex == GUID_ASF_STREAM_PROPERTIES:
+      assert size >= 74
+      stream_type_guid_hex = asf_head[i + 24 : i + 40].encode('hex')
+      if stream_type_guid_hex == GUID_ASF_AUDIO_MEDIA:
+        stream_type = 'audio'
+      elif stream_type_guid_hex in (GUID_ASF_VIDEO_MEDIA,
+                                    GUID_ASF_JFIF_MEDIA,
+                                    GUID_ASF_DEGRADABLE_JPEG_MEDIA):
+        stream_type = 'video'
+      elif stream_type_guid_hex == GUID_ASF_COMMAND_MEDIA:
+        stream_type = 'command'
+      else:
+        stream_type = 'unknown'
+      stream_id = int(struct.unpack('<H', asf_head[i + 72 : i + 74])[0])
+      assert stream_id <= ASF_MAX_NUM_STREAMS, 'Bad stream_id=%d' % stream_id
+      assert stream_id not in stream_ids
+      stream_ids[stream_id] = stream_type
+    elif guid_hex == GUID_ASF_STREAM_BITRATE_PROPERTIES:
+      assert size >= 26
+      stream_count_now = int(struct.unpack('<H', asf_head[i + 24 : i + 26])[0])
+      assert size >= 26 + 6 * stream_count_now
+      for j in xrange(0, stream_count_now):
+        stream_id, bitrate = struct.unpack(
+            '<HL', asf_head[i + 26 + j * 6 : i + 32 + j * 6])
+        assert stream_id <= ASF_MAX_NUM_STREAMS, 'Bad stream_id=%d' % stream_id
+        bitrate = int(bitrate)
+        stream_bitrates[stream_id] = bitrate
+        stream_bitrates_pos[stream_id] = i + 28 + j * 6
     i += size
   assert i == len(asf_head)
   assert packet_size > 0, 'Could not find packet_size in ASF header.'
-  asf_info['packet_size'] = int(packet_size)
-  return asf_info
+  return {
+      'packet_size': packet_size,
+      'stream_ids': stream_ids,
+      'stream_bitrates': stream_bitrates,
+      'stream_bitrates_pos': stream_bitrates_pos,
+  }
 
 
 def DoFirstAsfRequest(url):
-  # request-context below is the 
+  # request-context below is the HTTP request counter.
   headers = (
       'Accept: */*',
       'User-Agent: NSPlayer/4.1.0.3856',
@@ -254,7 +292,7 @@ def DoFirstAsfRequest(url):
       ext_head = f.read(ext_header_size)
       assert len(ext_head) == ext_header_size
       chunk_size -= ext_header_size    
-      assert len(asf_head) + chunk_size <= ASF_HEADER_MAX_SIZE, (
+      assert len(asf_head) + chunk_size <= ASF_MAX_HEADER_SIZE, (
           'ASF header too long.')
       chunk_data = f.read(chunk_size)
       assert len(chunk_data) == chunk_size
@@ -265,7 +303,29 @@ def DoFirstAsfRequest(url):
   finally:
     f.close()
 
-def DownloadAsfStream(f, outf):
+
+ZERO4_ARY = array.array('c', '\0\0\0\0')
+
+
+def GetAsfHeaderWithStreamsDisabled(
+    asf_head, asf_info, enabled_stream_ids):
+  stream_bitrates_pos = asf_info['stream_bitrates_pos']
+  if not set(stream_bitrates_pos).difference(enabled_stream_ids):
+    return asf_head  # All streams enabled, unchanged.
+  asf_head_ary = array.array('c', asf_head)
+  # Set bitrate of non-enabled streams to 0, so the video player wouldn't
+  # accidentally select them for playing. (Doesn't affect mplayer: mplayer
+  # would happily play those streams.)
+  for stream_id in sorted(stream_bitrates_pos):
+    if stream_id not in enabled_stream_ids:
+      bitrate_pos = stream_bitrates_pos[stream_id]
+      print bitrate_pos
+      asf_head_ary[bitrate_pos : bitrate_pos + 4] = ZERO4_ARY
+  return asf_head_ary.tostring()
+
+
+def DownloadAsfStreamData(f, outf, enabled_stream_ids):
+  # TODO(pts): Add support for live streams.
   expected_seq = 0
   processed_asf_header = False
   pos = 0
@@ -288,12 +348,12 @@ def DownloadAsfStream(f, outf):
         chunk_pos, 4 + ext_header_size, NAME_FROM_TYPE[chunk_type], chunk_size)
 
     if chunk_type == CHUNK_TYPE_DATA:
-      seq, = struct.unpack('<L', ext_head[:4])
+      seq = int(struct.unpack('<L', ext_head[:4])[0])
       assert expected_seq == seq, 'Bad seq: expected=%d got=%d' % (
           expected_seq, seq)
       expected_seq += 1
     elif chunk_type == CHUNK_TYPE_END:
-      seq, = struct.unpack('<L', ext_head[:4])
+      seq = int(struct.unpack('<L', ext_head[:4])[0])
       assert seq in (0, 1), 'Unexpected seq=%d for END' % seq
       if seq == 1:
         raise NotImplementedError('Subsequent HTTP request not supported.')
@@ -304,7 +364,7 @@ def DownloadAsfStream(f, outf):
       assert chunk_size, 'Unexpected chunk_size=%d' % chunk_size
     elif chunk_type == CHUNK_TYPE_ASF_HEADER:
       assert not processed_asf_header, 'Unexpected ASF_HEADER.'
-      assert len(asf_head) + chunk_size <= ASF_HEADER_MAX_SIZE, (
+      assert len(asf_head) + chunk_size <= ASF_MAX_HEADER_SIZE, (
           'ASF header too long.')
     else:
       assert 0, 'Unexpected chunk type=0x%x' % chunk_type
@@ -313,6 +373,8 @@ def DownloadAsfStream(f, outf):
       # All chunks of the ASF header has been read, interpret asf_head.
       asf_info = ParseAsfHeader(asf_head)
       packet_size = asf_info['packet_size']
+      outf.write(GetAsfHeaderWithStreamsDisabled(
+          asf_head, asf_info, enabled_stream_ids))
       asf_head = ''  # Save memory.
       processed_asf_header = True
 
@@ -322,10 +384,10 @@ def DownloadAsfStream(f, outf):
     pos += len(chunk_data)
     assert len(chunk_data) == chunk_size
     # print 'DUMP size=%d %r' % (len(chunk_data), chunk_data)
-    outf.write(chunk_data)
     if chunk_type == CHUNK_TYPE_DATA:
       assert chunk_size <= packet_size, 'Bad chunk_size=%d, packet_size=%d' % (
           chunk_size, packet_size)
+      outf.write(chunk_data)
       if packet_size > chunk_size:
         outf.write('\0' * (packet_size - chunk_size))  # Padding.
     elif chunk_type == CHUNK_TYPE_ASF_HEADER:
@@ -333,16 +395,60 @@ def DownloadAsfStream(f, outf):
     assert len(chunk_data) == chunk_size
 
 
+STREAM_ENABLE_FLAG = [2, 0]
+"""2 means disabled, 0 means enabled."""
 
-if False:
-  f = open('g2.asf')
-  outf = open('g2.asf.dump', 'w')
-  DownloadAsfStream(f, outf)
+
+def DoSecondAsfRequest(url, outf, stream_ids, enabled_stream_ids):
+  request_context = 2  # The HTTP request counter.
+  stream_time = 0
+  stream_selection = ' '.join(
+       'ffff:%d:%d' %
+       (stream_id, STREAM_ENABLE_FLAG[stream_id in enabled_stream_ids])
+       for stream_id in sorted(stream_ids))
+  headers = (
+      'Accept: */*',
+      'User-Agent: NSPlayer/4.1.0.3856',
+      'Pragma: no-cache,rate=1.000000,stream-time=%d,stream-offset=0:0,request-context=%d,max-duration=0' % (request_context, stream_time),
+      'Pragma: xClientGUID={c77e7400-738a-11d2-9add-0020af0a3278}',
+      'Pragma: xPlayStrm=1',
+      'Pragma: stream-switch-count=%d' % len(stream_ids),
+      'Pragma: stream-switch-entry=%s' % stream_selection,
+  )
+  del stream_time, stream_selection
+  f = DoHttpRequest(url, headers)
+  try:
+    DownloadAsfStreamData(f, outf, enabled_stream_ids)
+  finally:
+    f.close()
+
+
+def FindHighestQualityStream(asf_info, stream_type):
+  """Returns a stream ID (nonnegative integer) or None."""
+  stream_ids = asf_info['stream_ids']
+  stream_bitrates = asf_info['stream_bitrates']
+  max_bitrate = -2
+  best_stream_id = None
+  for cur_stream_id in sorted(stream_ids):
+    if stream_type == stream_ids[cur_stream_id]:
+      cur_bitrate = stream_bitrates.get(cur_stream_id, -1)
+      # Ignore streams with bitrate 0.
+      if cur_bitrate != 0 and cur_bitrate > max_bitrate:
+        max_bitrate = cur_bitrate
+        best_stream_id = cur_stream_id
+  return best_stream_id
 
 
 if __name__ == '__main__':
-  #f = DoHttpRequest('http://www.iana.org/domains/example/')
-
   url = 'http://streamer3.carnation.hu/mtvod2/hirado/2012/03/14/idojaras_20120314_122.wmv?MSWMExt=.asf'
   asf_info = DoFirstAsfRequest(url)
-  assert 0, asf_info
+  audio_stream_id = FindHighestQualityStream(asf_info, 'audio')
+  video_stream_id = FindHighestQualityStream(asf_info, 'video')
+  #assert 0, (asf_info, audio_stream_id, video_stream_id)
+  assert not (audio_stream_id is None and video_stream_id is None), (
+      'Missing audio and video stream, asf_info=%r' % asf_info)
+  enabled_stream_ids = set(
+      stream_id for stream_id in (audio_stream_id, video_stream_id)
+      if stream_id is not None)
+  outf = open('dump.asf', 'w')
+  DoSecondAsfRequest(url, outf, asf_info['stream_ids'], enabled_stream_ids)
