@@ -67,6 +67,8 @@ RESPONSE_HEADER_RE = re.compile(r'([A-Za-z][-\w]*): ?([^\r\n]*)\Z')
 def DoHttpRequest(url, request_headers=(), timeout=10):
   """Send a HTTP GET request.
 
+  DoHttpRequest(url) is similar to urllib.urlopen(url).
+
   Args:
     url: String containing an http:// or mmsh:// URL.
     request_headers: Sequence of strings containing request headers to send.
@@ -465,7 +467,7 @@ def DownloadMmsh(url, save_filename):
   enabled_stream_ids = set(
       stream_id for stream_id in (audio_stream_id, video_stream_id)
       if stream_id is not None)
-  print >>sys.stderr, 'Saving ASF to %s' % save_filename
+  print >>sys.stderr, 'Saving    ASF to %s' % save_filename
   outf = open(save_filename, 'w')
   try:
     DoSecondAsfRequest(url, outf, asf_info['stream_ids'], enabled_stream_ids)
@@ -490,12 +492,42 @@ def GuessSaveFilenameFromUrl(url):
   return name + ext
 
 
+def GetMtvStreamUrl(url):
+  # oritinally by pts@fazekas.hu at Sat Feb 18 10:18:45 CET 2012
+  # adapted at Sat Mar 31 11:51:25 CEST 2012
+  # Example: http://videotar.mtv.hu/Kategoriak/Maradj%20talpon.aspx
+  # -> http://streamer.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv
+  # -> mmsh://streamer2.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv?MSWMExt=.asf
+  print >>sys.stderr, 'info: getting Mtv stream URL for: %s' % url
+  assert url.startswith('http://videotar.mtv.hu/')
+  data = DoHttpRequest(url).read()
+  # ShowVideo('http://streamer.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv', '');
+  matches = re.findall(r'["\'](http://streamer[.]carnation[.]hu/[^&"\'\\?]+[.]wmv)["\']', data)
+  assert len(matches) == 1, matches
+  url2 = matches[0]
+  data = DoHttpRequest(url2).read().strip()
+  # '<asx version="3.0">\n  <title>MTV Online Live Stream</title>\n  <entry>\n'
+  # '    <title>www.mtv.hu</title>\n\n\t    <ref href="http://streamer2.'
+  # 'carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv"'
+  # ' />\n\t    <ref href="http://streamer3.carnation.hu/mtvod2/maradj_taplon/'
+  # '2012/02/17/maradj_talpon_20120217.wmv" />    <author>MTV</author>\n'
+  # '    <copyright>(c) 2008 www.mtv.hu</copyright>\n  </entry>\n</asx>\n'
+  assert data.startswith('<asx ')
+  # TODO(pts): If streamer2 returns a 404 error for the real stream, use streamer3 automatically.
+  matches = re.findall(r'["\'](http://streamer\d+[.]carnation[.]hu/[^&"\'\\?]+[.]wmv)["\']', data)
+  assert matches
+  url3 = matches[0]  # There are usually 2 matches in random order.
+  return re.sub(r'\A\w+://', 'mmsh://', url3, 1) + '?MSWMExt=.asf'
+
+
 def main(argv):
   if len(argv) not in (2, 3):
     print >>sys.stderr, 'Usage: %s <mmsh-url> [<save-filename>]' % argv[0]
     print >>sys.stderr, 'Use this program to download mmsh:// streams.'
     return 1
   url = argv[1]
+  if url.startswith('http://videotar.mtv.hu/'):
+    url = GetMtvStreamUrl(url)
   if len(argv) > 2:
     save_filename = argv[2]
   else:
