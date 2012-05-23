@@ -1,4 +1,4 @@
-#! /usr/bin/python2.4
+#! /usr/bin/python
 # by pts@fazekas.hu at Sat Mar 24 17:32:25 CET 2012
 #
 # mmshget: mmsh:// (MMS-over-HTTP) video stream downloader and reference
@@ -7,7 +7,8 @@
 # mmshget is a Python script to download streaming videos of the mmsh://
 # (MMS-over-HTTP) protocol, in .wmv (or .asf) format. mmshget can also be
 # used as an easy-to-understand, simple, client-side, partial reference
-# implementation of the mmsh:// protocol.
+# implementation of the mmsh:// protocol. mmshget works with Python 2.4,
+# 2.5, 2.6 and 2.7.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -25,6 +26,8 @@
 # recovery. This implementation is simple enough to be a reference
 # implementation for the client-side of the mmsh:// protocol in Python.
 # This implementation is inspired by mmsh.c in libmms-0.4.
+#
+# TODO(pts): Add continuation of a previously aborted download.
 
 __author__ = 'pts@fazekas.hu (Peter Szabo)'
 
@@ -72,7 +75,7 @@ RESPONSE_LINE1_RE = re.compile(
 RESPONSE_HEADER_RE = re.compile(r'([A-Za-z][-\w]*): ?([^\r\n]*)\Z')
 
 
-def DoHttpRequest(url, request_headers=(), timeout=10):
+def DoHttpRequest(url, request_headers=(), timeout=30, post_data=None):
   """Send a HTTP GET request.
 
   DoHttpRequest(url) is similar to urllib.urlopen(url).
@@ -98,15 +101,19 @@ def DoHttpRequest(url, request_headers=(), timeout=10):
     hostport = host
   else:
     hostport = '%s:%s' % (host, port)
+  if post_data is None:
+    method = 'GET'
+  else:
+    method = 'POST'
 
   proxy_address = GetProxyForHost(host)
   if proxy_address:
     connect_address = proxy_address
-    req = ['GET http://%s%s HTTP/1.0\r\nHost: %s\r\n' %
-           (hostport, path, hostport)]
+    req = ['%s http://%s%s HTTP/1.0\r\nHost: %s\r\n' %
+           (method, hostport, path, hostport)]
   else:
     connect_address = (host, port)
-    req = ['GET %s HTTP/1.0\r\nHost: %s\r\n' % (path, hostport)]
+    req = ['%s %s HTTP/1.0\r\nHost: %s\r\n' % (method, path, hostport)]
   for header in request_headers:
     header = header.rstrip('\r\n')
     if header:
@@ -116,7 +123,14 @@ def DoHttpRequest(url, request_headers=(), timeout=10):
       assert '\r' not in header, (
           'Unexpected CR in request_header=%r' % (header,))
       req.append(header + '\r\n')
+  if post_data is not None:
+    if not isinstance(post_data, str):
+       raise TypeError
+    # TODO(pts): Check that Content-Type is present in request_headers.
+    req.append('Content-Length: %d\r\n' % len(post_data))
   req.append('\r\n')
+  if post_data is not None:
+    req.append(post_data)
   req = ''.join(req)
 
   sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
@@ -222,6 +236,7 @@ def ParseAsfHeader(asf_head):
       stream_id = int(struct.unpack('<H', asf_head[i + 72 : i + 74])[0])
       assert stream_id <= ASF_MAX_NUM_STREAMS, 'Bad stream_id=%d' % stream_id
       assert stream_id not in stream_ids
+      #print (stream_id, stream_type)
       stream_ids[stream_id] = stream_type
     elif guid_hex == GUID_ASF_STREAM_BITRATE_PROPERTIES:
       assert size >= 26
@@ -310,7 +325,6 @@ def GetAsfHeaderWithStreamsDisabled(
   for stream_id in sorted(stream_bitrates_pos):
     if stream_id not in enabled_stream_ids:
       bitrate_pos = stream_bitrates_pos[stream_id]
-      print bitrate_pos
       asf_head_ary[bitrate_pos : bitrate_pos + 4] = ZERO4_ARY
   return asf_head_ary.tostring()
 
@@ -501,7 +515,7 @@ def GuessSaveFilenameFromUrl(url):
 
 
 def GetMtvStreamUrl(url):
-  # oritinally by pts@fazekas.hu at Sat Feb 18 10:18:45 CET 2012
+  # originally by pts@fazekas.hu at Sat Feb 18 10:18:45 CET 2012
   # adapted at Sat Mar 31 11:51:25 CEST 2012
   # Example: http://videotar.mtv.hu/Kategoriak/Maradj%20talpon.aspx
   # -> http://streamer.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv
@@ -528,6 +542,67 @@ def GetMtvStreamUrl(url):
   return re.sub(r'\A\w+://', 'mmsh://', url3, 1) + '?MSWMExt=.asf'
 
 
+def GetEurosportStreamUrl(url):
+  # by pts@fazekas.hu at Wed May 23 14:37:02 CEST 2012
+  # Example: (http://www.eurosportplayer.com/video_cuv13185742.shtml)
+  # -> eurosport:lang=0,geoloc=HU,realip=80.98.123.212,ut=9c0762c2-c644-e011-a60b-1cc1deedf59c,ht=36b9eef9fd30796487427dab42834737,vidid=-1,cuvid=13185742,prdid=-1
+  # -> mmsh://vodstream.eurosport.com/nogeo/_!/catchup/20/G1_2113185742AA.wmv?auth=dbFcHcKdta3bwcBbpbhdRcHc3aHakdUb5d8-bpVnA0-U4-frG-HzsELAskx
+  #
+  # Firefox bookmarklet for generating the eurosport: URL: javascript:d=document.getElementsByTagName('param');for(i=0;i<d.length;++i){if(d[i].name=='InitParams'){e=document.createElement('div');e.appendChild(document.createTextNode('eurosport:'+d[i].value));e.style.background='#fff';e.style.color='#f00';document.body.insertBefore(e,document.body.firstChild)}}void(0)
+  print >>sys.stderr, 'info: getting Eurosport stream URL for: %s' % url
+  assert url.startswith('eurosport:')
+  # Example: <param name="InitParams" value="lang=0,geoloc=HU,realip=80.98.123.212,ut=9c0762c2-c644-e011-a60b-1cc1deedf59c,ht=36b9eef9fd30796487427dab42834737,vidid=-1,cuvid=13103566,prdid=-1" />
+  init_params = url.split(':', 1)[1]
+  init_params_dict = {}
+  for pair in init_params.split(','):
+    if pair:
+      name, value = pair.split('=', 1)
+      init_params_dict[name] = value
+  # TODO(pts): Escape XML text.
+  post_data = (
+      '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+      '<s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">'
+      '<GetCatchUpVideoSecurized xmlns="http://tempuri.org/">'
+      '<catchUpVideoId>%(cuvid)s</catchUpVideoId>'
+      '<geolocCountry>%(geoloc)s</geolocCountry>'
+      '<realIp>%(realip)s</realIp>'
+      '<userId>%(ut)s</userId>'
+      '<hkey>%(ht)s</hkey>'
+      '<responseLangId>%(lang)s</responseLangId>'
+      '</GetCatchUpVideoSecurized>'
+      '</s:Body>'
+      '</s:Envelope>' % init_params_dict)
+  response = DoHttpRequest(
+      'http://videoshop.eurosport.com/PlayerCatchupService.asmx',
+      request_headers=(
+          'Referer: http://www.eurosportplayer.com/layout/x/PlayerSL4.xap\r\n',
+          'Content-Type: text/xml; charset=utf-8\r\n',
+          'SOAPAction: "http://tempuri.org/GetCatchUpVideoSecurized"\r\n',
+      ),
+      post_data=post_data).read()
+  good_url = None
+  for content_str in re.findall(r'(?m)<catchupstream>(.*?)</catchupstream>', response):
+    match = re.search(r'(?m)<lang>\d+</lang>\s*<name>([^<]*?)</name>', content_str)
+    if match:
+      language = match.group(1)
+    else:
+      match = re.search(r'(?m)<lang>\d+</lang>\s*<name\s*/>', content_str)
+      assert match, repr(content_str)
+      language = ''  # !! Autonumber.
+    match = re.search(r'(?m)<securizedurl>mmsh?://([^<]*?)</securizedurl>', content_str)
+    url = 'mmsh://' + match.group(1)
+    if language.lower() == 'english':
+      good_url = url
+  assert good_url is not None
+  # TODO(pts): Distinguish streams betwen same URL for multiple languages.
+  # {'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G4_1813103566A0.wmv?auth=dbFa9cUa_aJcYbaagdvc9bxdndzbJbydbd0-bpVngw-U4-frG-FzsBFAslv': ['Finnish', 'Norwegian', 'Romanian', 'Czech'],
+  #  'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G1_1713103566A0.wmv?auth=dbFcmcScBaXdFa4bQcpavcfc.dibnd.crdr-bpVngw-U4-frG-GzqDJAwmw': ['English', 'German', 'Spanish'],
+  #  'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G3_1813103566A0.wmv?auth=dbFb1awavcmaWata5bkd2cOcmb4dRcibjbz-bpVngw-U4-frG-HxoBDCpjD': ['Dutch', 'Swedish', 'Portuguese', 'Danish'],
+  #  'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G2_1713103566A0.wmv?auth=dbFaKd.bvcaclcncsb.bRd1aadLcgcGaoa3-bpVngw-U4-frG-KAoCDCnlw': ['', '', 'Polish', 'Russian']}
+  # {'stream_bitrates': {1: 705965, 2: 49059, 3: 49059, 4: 49059, 5: 49059}, 'stream_bitrates_pos': {1: 6003, 2: 6009, 3: 6015, 4: 6021, 5: 6027}, 'packet_size': 16000, 'packet_count': 39783, 'stream_ids': {1: 'video', 2: 'audio'}, 'file_size': 636682253}
+  return good_url
+
+
 def main(argv):
   if len(argv) not in (2, 3):
     print >>sys.stderr, 'Usage: %s <mmsh-url> [<save-filename>]' % argv[0]
@@ -536,6 +611,8 @@ def main(argv):
   url = argv[1]
   if url.startswith('http://videotar.mtv.hu/'):
     url = GetMtvStreamUrl(url)
+  elif url.startswith('eurosport:'):
+    url = GetEurosportStreamUrl(url)
   if len(argv) > 2:
     save_filename = argv[2]
   else:
