@@ -75,7 +75,8 @@ RESPONSE_LINE1_RE = re.compile(
 RESPONSE_HEADER_RE = re.compile(r'([A-Za-z][-\w]*): ?([^\r\n]*)\Z')
 
 
-def DoHttpRequest(url, request_headers=(), timeout=30, post_data=None):
+def DoHttpRequest(url, request_headers=(), timeout=30, post_data=None,
+                  content_length_out=None):
   """Send a HTTP GET request.
 
   DoHttpRequest(url) is similar to urllib.urlopen(url).
@@ -84,6 +85,7 @@ def DoHttpRequest(url, request_headers=(), timeout=30, post_data=None):
     url: String containing an http:// or mmsh:// URL.
     request_headers: Sequence of strings containing request headers to send.
     timeout: Timeout for each socket operation, in seconds.
+    content_length_out: To-be-appended list for Content-Length or None.
   Returns:
     Returns a file-like object for reading the response body.
   """
@@ -160,6 +162,11 @@ def DoHttpRequest(url, request_headers=(), timeout=30, post_data=None):
       break
     match = RESPONSE_HEADER_RE.match(line)
     assert match, 'Bad HTTP response line=%r' % line
+    name = match.group(1).lower()
+    value = match.group(2).strip()
+    if content_length_out is not None:
+      if name == 'content-length':
+        content_length_out.append(int(value))
 
   return f
 
@@ -419,7 +426,7 @@ def DownloadAsfStreamData(f, outf, enabled_stream_ids):
             (100.0 * out_pos / file_size),
             int(eta + .999999))
       else:
-        msg = 'Downloaded %d bytes in %ds...' % int(now_ts - start_ts)
+        msg = 'Downloaded %d bytes in %ds...' % (out_pos, int(now_ts - start_ts))
       max_msg_size = max(max_msg_size, len(msg))
       sys.stderr.write('\r' + msg)
       sys.stderr.flush()
@@ -490,14 +497,76 @@ def DownloadMmsh(url, save_filename):
       stream_id for stream_id in (audio_stream_id, video_stream_id)
       if stream_id is not None)
   print >>sys.stderr, 'Saving    ASF to %s' % save_filename
-  outf = open(save_filename, 'w')
+  outf = open(save_filename, 'wb')
   try:
     DoSecondAsfRequest(url, outf, asf_info['stream_ids'], enabled_stream_ids)
   finally:
     outf.close()
 
 
-def GuessSaveFilenameFromUrl(url):
+def DownloadHttp(url, save_filename):
+  # TODO(pts): Continue a previously broken download.
+  print >>sys.stderr, 'Downloading HTTP from %s' % url
+  print >>sys.stderr, 'Will save to %s' % save_filename
+  outf = open(save_filename, 'wb')
+  try:
+    content_length_ary = []
+    f = DoHttpRequest(url, content_length_out=content_length_ary)
+    if content_length_ary:
+      bytes_remaining = content_length_ary[-1]
+    else:
+      bytes_remaining = None
+    try:
+      sys.stderr.write('Downloading HTTP stream...')
+      max_msg_size = 0
+      out_pos = 0
+      start_ts = time.time()
+      while True:
+        # TODO(pts): Count Content-Length, abort on a partial download.
+        data = f.read(65536)
+        if not data:
+          break
+        assert bytes_remaining is None or len(data) <= bytes_remaining, (
+            'Too many bytes read.')
+        bytes_remaining -= len(data)
+        outf.write(data)
+        outf.flush()
+        out_pos += len(data)
+        now_ts = time.time()
+        if content_length_ary:
+          file_size = content_length_ary[-1]
+          eta = (now_ts - start_ts) * ((file_size + 0.0) / out_pos - 1)
+          # TODO(pts): Remove up to EOL of previous msg was longer.
+          msg = 'Downloaded %d of %d bytes (%.2f%%), ETA %ds...' % (
+              out_pos, file_size,
+              (100.0 * out_pos / file_size),
+              int(eta + .999999))
+        else:
+          msg = 'Downloaded %d bytes in %ds...' % (out_pos, int(now_ts - start_ts))
+        max_msg_size = max(max_msg_size, len(msg))
+        sys.stderr.write('\r' + msg)
+        sys.stderr.flush()
+      assert not bytes_remaining, (
+          'Download aborted too early, %d bytes remaining.' % bytes_remaining)
+      # TODO(pts): Do this in a `finally:' block.
+      sys.stderr.write('\r' + ' ' * max_msg_size)
+      duration = time.time() - start_ts
+      print >>sys.stderr, '\rDownload finished (%d bytes) in %ds.' % (
+          out_pos, int(duration + .999999))
+      sys.stderr.flush()
+    finally:
+      f.close()
+  finally:
+    outf.close()
+
+
+def GuessSaveFilenameFromUrl(url, orig_url):
+  force_ext = ''
+  if orig_url.startswith('http://tv2.hu/'):
+    match = re.search(r'[.]\w+\Z', url)
+    if match:
+      force_ext = match.group(0)
+    url = orig_url
   save_filename = re.sub(r'(?s)[?].*\Z', '', url)
   save_filename = save_filename[save_filename.rfind('/') + 1 :]
   save_filename = re.sub(
@@ -508,9 +577,12 @@ def GuessSaveFilenameFromUrl(url):
       r'[^-.\w]',
       lambda match: '%%%02X' % ord(match.group(0)), save_filename)
   name, ext = os.path.splitext(save_filename)
-  ext = ext.lower()
-  if ext not in ('.asf', '.wmv'):
-    ext += '.wmv'
+  if force_ext:
+    ext = force_ext.lower()
+  else:
+    ext = ext.lower()
+    if ext not in ('.asf', '.wmv'):
+      ext += '.wmv'
   return name + ext
 
 
@@ -520,7 +592,7 @@ def GetMtvStreamUrl(url):
   # Example: http://videotar.mtv.hu/Kategoriak/Maradj%20talpon.aspx
   # -> http://streamer.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv
   # -> mmsh://streamer2.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv?MSWMExt=.asf
-  print >>sys.stderr, 'info: getting Mtv stream URL for: %s' % url
+  print >>sys.stderr, 'Getting Mtv stream URL for: %s' % url
   assert url.startswith('http://videotar.mtv.hu/')
   data = DoHttpRequest(url).read()
   # ShowVideo('http://streamer.carnation.hu/mtvod2/maradj_taplon/2012/02/17/maradj_talpon_20120217.wmv', '');
@@ -549,7 +621,7 @@ def GetEurosportStreamUrl(url):
   # -> mmsh://vodstream.eurosport.com/nogeo/_!/catchup/20/G1_2113185742AA.wmv?auth=dbFcHcKdta3bwcBbpbhdRcHc3aHakdUb5d8-bpVnA0-U4-frG-HzsELAskx
   #
   # Firefox bookmarklet for generating the eurosport: URL: javascript:d=document.getElementsByTagName('param');for(i=0;i<d.length;++i){if(d[i].name=='InitParams'){e=document.createElement('div');e.appendChild(document.createTextNode('eurosport:'+d[i].value));e.style.background='#fff';e.style.color='#f00';document.body.insertBefore(e,document.body.firstChild)}}void(0)
-  print >>sys.stderr, 'info: getting Eurosport stream URL for: %s' % url
+  print >>sys.stderr, 'Getting Eurosport stream URL for: %s' % url
   assert url.startswith('eurosport:')
   # Example: <param name="InitParams" value="lang=0,geoloc=HU,realip=80.98.123.212,ut=9c0762c2-c644-e011-a60b-1cc1deedf59c,ht=36b9eef9fd30796487427dab42834737,vidid=-1,cuvid=13103566,prdid=-1" />
   init_params = url.split(':', 1)[1]
@@ -603,21 +675,64 @@ def GetEurosportStreamUrl(url):
   return good_url
 
 
+def GetTv2StreamUrl(url):
+  # copied from webcast.py
+  # at Thu Oct 14 22:08:27 CEST 2010
+  # then copied from xmplayer
+
+  assert url.startswith('http://tv2.hu/')
+  print >>sys.stderr, 'Getting Tv2 stream URL for: %s' % url
+
+  data = DoHttpRequest(url).read()
+  # playlistURL: 'http://tv2.hu/edesnegyes/video/zana-jozsef-egy-non-akar-meghalni/player/xml'
+  match = re.search(r'\bplaylistURL:\s*\'(http://[^\'"\\&]+)\'', data)
+  assert match
+  url2 = match.group(1)
+
+  data = DoHttpRequest(url2).read()
+  # Example:
+  #                <URL reference="true">
+  #                        <![CDATA[http://streamctl.tv2.hu/bydate/20101002/55018.flv]]>
+  #                </URL>
+  # Example 2:
+  #   <URL reference="true"><![CDATA[http://streamctl.tv2.hu/vod2/20120217/id_85163]]></URL>
+  match = re.search('(?s)<URL[ >].*?(http://[^\]<>"&]+(?:[.](?:flv|mp4)|/id_\d+))[\]<>]', data)
+  assert match, data
+  url3 = match.group(1)
+
+  #print >>sys.stderr, 'url3: %s' % url3
+  data = DoHttpRequest(url3).read()
+  # <url>http://pstream5.tv2.hu/bydate/20101002/55018.flv</url>
+  # <url>http://pstream3.tv2.hu/vod4/20120217/85163.phone_h264_800k.mp4?st=epj35Dl7YW7Dvqtc2uwPwA&amp;e=1329650150</url>
+  match = re.search('(http://[^<>&"?]+[.](?:flv|mp4))(?:\s*<|[?])', data)
+  assert match, data
+  url4 = match.group(1)
+
+  # mplayer can play this stream directly, and download managers can download
+  # the file directly.
+  return url4
+
+
 def main(argv):
   if len(argv) not in (2, 3):
     print >>sys.stderr, 'Usage: %s <mmsh-url> [<save-filename>]' % argv[0]
     print >>sys.stderr, 'Use this program to download mmsh:// streams.'
     return 1
-  url = argv[1]
+  orig_url = url = argv[1]
   if url.startswith('http://videotar.mtv.hu/'):
     url = GetMtvStreamUrl(url)
+  elif url.startswith('http://tv2.hu/'):
+    url = GetTv2StreamUrl(url)
   elif url.startswith('eurosport:'):
     url = GetEurosportStreamUrl(url)
   if len(argv) > 2:
     save_filename = argv[2]
   else:
-    save_filename = GuessSaveFilenameFromUrl(url)
-  DownloadMmsh(url, save_filename)
+    save_filename = GuessSaveFilenameFromUrl(url, orig_url)
+  if url.startswith('http://'):
+    DownloadHttp(url, save_filename)
+  else:
+    DownloadMmsh(url, save_filename)
 
 
 if __name__ == '__main__':
