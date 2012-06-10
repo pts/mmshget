@@ -39,6 +39,19 @@ import struct
 import sys
 import time
 
+
+def ShellQuote(string):
+  # TODO(pts): Make it work properly on non-Unix systems.
+  string = str(string)
+  if string and not re.search('[^-_.+,:/a-zA-Z0-9]', string):
+    return string
+  elif sys.platform.startswith('win'):
+    # TODO(pts): Does this replace make sense?
+    return '"%s"' % string.replace('"', '""') 
+  else:
+    return "'%s'" % string.replace("'", "'\\''")
+
+                                        
 # --- Proxy
 
 HTTP_PROXY_RE = re.compile(r'(?:\w+://)?([^+%@?#:/]+)(?::(\d+))?(?:/|\Z)')
@@ -486,6 +499,7 @@ def FindHighestQualityStream(asf_info, stream_type):
 
 
 def DownloadMmsh(url, save_filename):
+  assert url.startswith('mmsh://')
   print >>sys.stderr, 'Downloading MMS from %s' % url
   print >>sys.stderr, 'Will save ASF to %s' % save_filename
   asf_info = DoFirstAsfRequest(url)
@@ -505,6 +519,7 @@ def DownloadMmsh(url, save_filename):
 
 
 def DownloadHttp(url, save_filename):
+  assert url.startswith('http://')
   # TODO(pts): Continue a previously broken download.
   print >>sys.stderr, 'Downloading HTTP from %s' % url
   print >>sys.stderr, 'Will save to %s' % save_filename
@@ -567,8 +582,12 @@ def GuessSaveFilenameFromUrl(url, orig_url):
     if match:
       force_ext = match.group(0)
     url = orig_url
+  elif url.startswith('rtmp'):
+    force_ext = '.flv'  # Or keep .mp4?
   save_filename = re.sub(r'(?s)[?].*\Z', '', url)
   save_filename = save_filename[save_filename.rfind('/') + 1 :]
+  if save_filename.startswith('mp4:'):  # rtmp://flash1.atv.hu/vod/mp4:120607_huzos_2.mp4
+    save_filename = save_filename[4:]
   save_filename = re.sub(
       r'%([a-fA-F0-9]{2})',
       lambda match: chr(int(match.group(1), 16)),
@@ -612,6 +631,18 @@ def GetMtvStreamUrl(url):
   assert matches
   url3 = matches[0]  # There are usually 2 matches in random order.
   return re.sub(r'\A\w+://', 'mmsh://', url3, 1) + '?MSWMExt=.asf'
+
+
+def GetAtvStreamUrl(url):
+  # at Sun Jun 10 12:09:08 CEST 2012
+  # Example: http://atv.hu/videotar/20120608_csernus_imre
+  # -> rtmp://flash1.atv.hu/vod/mp4:120607_huzos_2.mp4
+  print >>sys.stderr, 'Getting Atv stream URL for: %s' % url
+  assert url.startswith('http://atv.hu/videotar/')
+  data = DoHttpRequest(url).read()
+  matches = set(re.findall(r'=(rtmp://[^&"\'\\]+)[&"\']', data))
+  assert len(matches) == 1, matches
+  return iter(matches).next()
 
 
 def GetEurosportStreamUrl(url):
@@ -665,7 +696,7 @@ def GetEurosportStreamUrl(url):
     url = 'mmsh://' + match.group(1)
     if language.lower() == 'english':
       good_url = url
-  assert good_url is not None
+  assert good_url is not None, response
   # TODO(pts): Distinguish streams betwen same URL for multiple languages.
   # {'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G4_1813103566A0.wmv?auth=dbFa9cUa_aJcYbaagdvc9bxdndzbJbydbd0-bpVngw-U4-frG-FzsBFAslv': ['Finnish', 'Norwegian', 'Romanian', 'Czech'],
   #  'mmsh://vodstream.eurosport.com/nogeo/_!/catchup/21/G1_1713103566A0.wmv?auth=dbFcmcScBaXdFa4bQcpavcfc.dibnd.crdr-bpVngw-U4-frG-GzqDJAwmw': ['English', 'German', 'Spanish'],
@@ -713,6 +744,26 @@ def GetTv2StreamUrl(url):
   return url4
 
 
+def DownloadRtmp(url, save_filename):
+  match = re.match(r'\A(\w+)://([^/]+)/', url)
+  assert match, repr(url)
+  protocol = match.group(1)
+  host = match.group(2)
+  assert protocol in ('rtmp', 'rtmpt', 'rtmpe', 'rtmpte', 'rtmps'), repr(url)
+  cmd = ['rtmpdump', '-o', save_filename, '-r', url, '-t', url]
+  if host.endswith('.atv.hu'):
+    # Works for rtmp://flash1.atv.hu/vod/mp4:120607_huzos_2.mp4"
+    # at Sun Jun 10 12:27:28 CEST 2012
+    cmd.extend(('-s', 'http://static.atv.hu/'))
+  cmd_str = ' '.join(map(ShellQuote, cmd))
+  print >>sys.stderr, 'Running: ' + cmd_str
+  status = os.system(cmd_str)
+  if status:
+    print >>sys.stderr, (
+        'External command (rtmpdump) failed with status 0x%x' % status)
+    sys.exit(3)
+
+
 def main(argv):
   if len(argv) not in (2, 3):
     print >>sys.stderr, 'Usage: %s <mmsh-url> [<save-filename>]' % argv[0]
@@ -725,14 +776,24 @@ def main(argv):
     url = GetTv2StreamUrl(url)
   elif url.startswith('eurosport:'):
     url = GetEurosportStreamUrl(url)
+  elif url.startswith('http://atv.hu/videotar/'):
+    url = GetAtvStreamUrl(url)
   if len(argv) > 2:
     save_filename = argv[2]
   else:
     save_filename = GuessSaveFilenameFromUrl(url, orig_url)
-  if url.startswith('http://'):
+  match = re.match(r'\A([a-zA-Z]\w+)://', url)
+  assert match, 'Invalid protocol for URL: ' + url
+  protocol = match.group(1).lower()
+  if protocol == 'http':  # https:// is not supported.
     DownloadHttp(url, save_filename)
-  else:
+  elif protocol == 'mmsh':
     DownloadMmsh(url, save_filename)
+  elif protocol in ('rtmp', 'rtmpt', 'rtmpe', 'rtmpte', 'rtmps'):
+    DownloadRtmp(url, save_filename)
+  else:
+    print >>sys.stderr, 'Unsupported protocol for URL: ' + url
+    return 2
 
 
 if __name__ == '__main__':
