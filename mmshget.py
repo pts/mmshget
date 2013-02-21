@@ -640,7 +640,7 @@ def GetAtvStreamUrl(url):
   print >>sys.stderr, 'Getting Atv stream URL for: %s' % url
   assert url.startswith('http://atv.hu/videotar/')
   data = DoHttpRequest(url).read()
-  matches = set(re.findall(r'=(rtmp://[^&"\'\\]+)[&"\']', data))
+  matches = set(re.findall(r'=["\']?(rtmp://[^&"\'\\]+)[&"\']', data))
   assert len(matches) == 1, matches
   return iter(matches).next()
 
